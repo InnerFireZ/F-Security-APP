@@ -176,7 +176,7 @@ Every module that needs a network interface calls `resolve_iface` from `lib.sh`.
 
 | # | Module | Tag | Description |
 |---|--------|-----|-------------|
-| 08 | Web | WEB | whatweb / nikto / gobuster / feroxbuster — multi-tool web recon |
+| 08 | Web | WEB | whatweb / gobuster / feroxbuster — multi-tool web recon |
 | 40 | SQLMap | SQL | SQL injection — detect · extract · os-shell · full automation |
 | 47 | WPScan | WP | WordPress scanner — plugins · themes · users · CVEs |
 
@@ -282,7 +282,7 @@ apt install john hashcat
 apt install responder mitm6 bettercap tshark
 
 # Web
-apt install nikto gobuster feroxbuster sqlmap wpscan
+apt install gobuster feroxbuster sqlmap wpscan
 
 # WiFi
 apt install aircrack-ng wifite2
