@@ -15,6 +15,43 @@ if ! ip link show wlan1 &>/dev/null 2>&1; then
   exit 1
 fi
 
+# ── Pre-flight cleanup — kill zombies from any previous run ────────────────
+section "Pre-flight cleanup"
+printf '  %s[*]%s Killing stale hostapd / dnsmasq / karma.py ...\n' "$CYAN" "$RESET"
+pkill -9 -f "hostapd /tmp/ap_wpa.conf"        2>/dev/null || true
+pkill -9 -f "hostapd /tmp/ap_opn.conf"        2>/dev/null || true
+pkill -9 -f "hostapd /tmp/ap_wpe.conf"        2>/dev/null || true
+pkill -9 -f "hostapd-eaphammer"               2>/dev/null || true
+pkill -9 -f "dnsmasq.*dhcp_wlan"              2>/dev/null || true
+pkill -9 -f "karma\.py"                        2>/dev/null || true
+# Broader fallback — kill ANY hostapd/dnsmasq still holding wlan1
+pkill -9 hostapd  2>/dev/null || true
+pkill -9 dnsmasq  2>/dev/null || true
+sleep 2   # kernel needs time to fully release interface binds after SIGKILL
+
+# Remove stale temp/config/lease files
+rm -f /tmp/ap_wpa.conf /tmp/ap_opn.conf /tmp/ap_wpe.conf 2>/dev/null || true
+rm -f /tmp/dhcp_wlan1.conf /tmp/dhcp_wlan1.leases        2>/dev/null || true
+
+# Clean stale routing rules left by previous run
+ip rule del to 12.0.0.0/24 lookup 1033 2>/dev/null || true
+ip rule del to 10.0.0.0/24 lookup 1033 2>/dev/null || true
+ip r flush table 1033 2>/dev/null || true
+
+# Reset wlan1: flush IPs, bounce interface, force managed mode
+ip addr flush dev wlan1       2>/dev/null || true
+ip link set wlan1 down        2>/dev/null || true
+iw dev wlan1 set type managed 2>/dev/null || true
+ip link set wlan1 up          2>/dev/null || true
+sleep 0.5
+
+# Remove any stale monitor vif
+for _vif in wlan1mon wlan1mon0; do
+  ip link show "$_vif" &>/dev/null 2>&1 && iw dev "$_vif" del 2>/dev/null || true
+done
+
+printf '  %s[+]%s Interface reset — ready\n' "$GREEN" "$RESET"
+
 section "Interface detected"
 printf '  %s[+]%s wlan1 present — proceeding\n' "$GREEN" "$RESET"
 
@@ -23,6 +60,9 @@ printf '  %s[+]%s wlan1 present — proceeding\n' "$GREEN" "$RESET"
 # every file at depth 2 (results/ts/file) which matches the session regex.
 outdir="$(make_outdir)"
 export KARMA_OUT="$outdir"
+
+# Advertise this session so pipeline can attach to it
+echo "$outdir" > /tmp/karma_running_session
 
 SESSION_START="$(date '+%Y-%m-%d %H:%M:%S')"
 
@@ -117,12 +157,6 @@ fi
 # airmon-ng RENAMES wlan1 → wlan1mon which destroys the AP interface — avoid it.
 section "Monitor mode"
 MON_IFACE="wlan1mon"
-
-# Clean up any stale monitor vif from previous run
-if ip link show "$MON_IFACE" &>/dev/null 2>&1; then
-  iw dev "$MON_IFACE" del 2>/dev/null || true
-  sleep 0.5
-fi
 
 # Get the phy (physical radio) for wlan1
 PHY="$(iw dev wlan1 info 2>/dev/null | awk '/wiphy/{print "phy"$2}')"
@@ -244,9 +278,58 @@ cleanup() {
       while read -r _fn; do printf '  %s\n' "$_fn"; done
   } >> "$outdir/karma_session.txt"
 
+  # ── Kill all karma child processes ───────────────────────────────────
+  pkill -9 -f "hostapd /tmp/ap_wpa.conf"  2>/dev/null || true
+  pkill -9 -f "hostapd /tmp/ap_opn.conf"  2>/dev/null || true
+  pkill -9 -f "hostapd /tmp/ap_wpe.conf"  2>/dev/null || true
+  pkill -9 -f "hostapd-eaphammer"         2>/dev/null || true
+  pkill -9 -f "dnsmasq.*dhcp_wlan"        2>/dev/null || true
+  pkill -9 -f "karma\.py"                  2>/dev/null || true
+  pkill -9 -f "on_client"                 2>/dev/null || true
+  pkill -9 -f "on_network"               2>/dev/null || true
+  sleep 0.5
+
   # ── Remove monitor vif ────────────────────────────────────────────────
   iw dev "$MON_IFACE" del 2>/dev/null || true
-  ip link set wlan1 up 2>/dev/null || true
+
+  # ── Reset wlan1 to clean managed state ───────────────────────────────
+  ip addr flush dev wlan1       2>/dev/null || true
+  ip link set wlan1 down        2>/dev/null || true
+  iw dev wlan1 set type managed 2>/dev/null || true
+  ip link set wlan1 up          2>/dev/null || true
+
+  # ── Clean routing rules ───────────────────────────────────────────────
+  ip rule del to 12.0.0.0/24 lookup 1033 2>/dev/null || true
+  ip rule del to 10.0.0.0/24 lookup 1033 2>/dev/null || true
+  ip r flush table 1033 2>/dev/null || true
+
+  # ── Remove temp files ─────────────────────────────────────────────────
+  rm -f /tmp/ap_wpa.conf /tmp/ap_opn.conf /tmp/ap_wpe.conf 2>/dev/null || true
+  rm -f /tmp/dhcp_wlan1.conf /tmp/dhcp_wlan1.leases        2>/dev/null || true
+
+  # ── Reset PMIC OTG state so phone charges after WiFi adapter unplugged ─
+  # OnePlus/Qualcomm SMBLIB bug: hw_detect stays=1 after OTG use → blocks
+  # charging on any subsequent USB connect even with a charger.
+  # Best-effort: clear hw_detect now and keep clearing it for 15s while
+  # user switches cables. Proper fix = USB-C PD cable; reboot = guaranteed fix.
+  _HW_DETECT="/sys/class/power_supply/usb/hw_detect"
+  if [[ -f "$_HW_DETECT" ]]; then
+    echo 0 > "$_HW_DETECT" 2>/dev/null || true
+    printf '  %s[*]%s PMIC OTG state reset — plug charger now%s\n' "$CYAN" "$RESET" "$RESET"
+    # Background watcher: keep clearing for 15s while user reconnects charger
+    (
+      for _i in $(seq 1 30); do
+        sleep 0.5
+        _hw=$(cat "$_HW_DETECT" 2>/dev/null)
+        _mode=$(cat /sys/class/power_supply/usb/typec_mode 2>/dev/null)
+        # Only fight it back when we see Source attached (charger) — not OTG device
+        [[ "$_hw" == "1" && "$_mode" == *"Source attached"* ]] && \
+          echo 0 > "$_HW_DETECT" 2>/dev/null || true
+      done
+    ) &
+  fi
+
+  rm -f /tmp/karma_running_session 2>/dev/null || true
 
   printf '\n  Results saved: %s\n' "$outdir"
   mark_done "$outdir"
@@ -254,8 +337,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── Run karma.py ────────────────────────────────────────────────────────────
+# Pipeline mode: 500s per SSID. Standalone: 9999s (runs until user stops).
+if [[ -n "${SESSION_DIR:-}" ]]; then
+  _KARMA_T=500
+else
+  _KARMA_T=9999
+fi
 case "$MODE" in
-  opn) python3 karma.py -mon "$MON_IFACE" -opn wlan1 "${KARMA_ARGS[@]}" 2>&1 | tee "$outdir/karma.log" ;;
-  eap) python3 karma.py -mon "$MON_IFACE" -eap wlan1 "${KARMA_ARGS[@]}" 2>&1 | tee "$outdir/karma.log" ;;
-  *)   python3 karma.py -mon "$MON_IFACE" -wpa wlan1 "${KARMA_ARGS[@]}" 2>&1 | tee "$outdir/karma.log" ;;
+  opn) python3 karma.py -mon "$MON_IFACE" -opn wlan1 -T "$_KARMA_T" "${KARMA_ARGS[@]}" 2>&1 | tee "$outdir/karma.log" ;;
+  eap) python3 karma.py -mon "$MON_IFACE" -eap wlan1 -T "$_KARMA_T" "${KARMA_ARGS[@]}" 2>&1 | tee "$outdir/karma.log" ;;
+  *)   python3 karma.py -mon "$MON_IFACE" -wpa wlan1 -T "$_KARMA_T" "${KARMA_ARGS[@]}" 2>&1 | tee "$outdir/karma.log" ;;
 esac

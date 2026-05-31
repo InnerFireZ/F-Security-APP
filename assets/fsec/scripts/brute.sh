@@ -624,6 +624,30 @@ for idx in "${TO_ATTACK[@]}"; do
   _run_service "${D_HOST[$idx]}" "${D_PORT[$idx]}" "${D_SVC[$idx]}"
 done
 
+# ── HTTP Basic Auth from web scan 401 discoveries ─────────────────────────────
+if [[ -n "${SESSION_DIR:-}" ]] && [[ -s "${SESSION_DIR}/chain_web_401.txt" ]]; then
+  printf '\n'
+  section "HTTP BASIC AUTH — from web scan"
+  printf '  %s[CHAIN]%s chain_web_401.txt found — brute forcing confirmed 401 paths%s\n\n' \
+    "${CYAN}" "${RESET}" "${RESET}"
+  while IFS= read -r _url; do
+    [[ -z "$_url" ]] && continue
+    _scheme=$(printf '%s' "$_url" | grep -oP '^https?' || true)
+    [[ -z "$_scheme" ]] && continue
+    _hostport=$(printf '%s' "$_url" | grep -oP '(?<=://)([^/]+)' || true)
+    _host=$(printf '%s' "$_hostport" | cut -d: -f1)
+    _port=$(printf '%s' "$_hostport" | grep -oP ':\K\d+' || true)
+    [[ -z "$_port" ]] && { [[ "$_scheme" == "https" ]] && _port=443 || _port=80; }
+    _path=$(printf '%s' "$_url" | grep -oP '(?<=://[^/]{1,200})(/.*)' | head -1 || true)
+    [[ -z "$_path" ]] && _path="/"
+    _mod="http-get"; [[ "$_scheme" == "https" ]] && _mod="https-get"
+    printf '\n  %s▶%s  %s  %s:%s%s\n' \
+      "${CYAN}${BOLD}" "${RESET}" "${_scheme^^}" "$_host" "$_port" "$_path"
+    printf '  %s──────────────────────────────────────────────%s\n' "${DIM}" "${RESET}"
+    _run_hydra "$_host" "$_port" "$_scheme" "$_mod" "$_path"
+  done < "${SESSION_DIR}/chain_web_401.txt"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n'
 printf '  %s┌──────────────────────────────────────────────────┐%s\n' "${CYAN}" "${RESET}"

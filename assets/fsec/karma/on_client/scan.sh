@@ -51,6 +51,14 @@ if [ -n "$OPEN_PORTS" ]; then
 fi
 printf "\033[1;36m  └─── saved: %s\033[0m\n\n" "$NMAP_OUT"
 
+# Share results with Dart pipeline scripts
+cp "$NMAP_OUT" "${OUT}/nmap.txt" 2>/dev/null || true
+if [ -n "$(grep "^[0-9]*/tcp.*open" "$NMAP_OUT" 2>/dev/null)" ]; then
+  grep "^[0-9]*/tcp.*open" "$NMAP_OUT" | awk '{print $1}' | cut -d/ -f1 | \
+    while read -r _port; do echo "${IP}:${_port}"; done >> "${OUT}/chain_ports.txt"
+  sort -u "${OUT}/chain_ports.txt" -o "${OUT}/chain_ports.txt" 2>/dev/null || true
+fi
+
 if [ -z "$OPEN_PORTS" ]; then
   printf "  \033[2m[-] No attack surface found on %s\033[0m\n" "$IP"
   exit 0

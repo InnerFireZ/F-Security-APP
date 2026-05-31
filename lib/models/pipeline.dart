@@ -15,9 +15,10 @@ class Pipeline {
   final int? projectId;
   final String? projectName;
   final bool karmaEnabled;
-  final String karmaMode;  // 'wpa' | 'opn' | 'eap'
-  final String karmaSsid;  // empty = auto-mirror
-  final String karmaPass;  // WPA passphrase; empty = random/default
+  final String karmaMode;   // 'wpa' | 'opn' | 'eap'
+  final String karmaSsid;   // empty = auto-mirror
+  final String karmaPass;   // WPA passphrase; empty = random/default
+  final bool karmaAttach;   // attach to already-running KARMA instead of starting new
 
   Pipeline({
     required this.name,
@@ -30,5 +31,6 @@ class Pipeline {
     this.karmaMode    = 'wpa',
     this.karmaSsid    = '',
     this.karmaPass    = '',
+    this.karmaAttach  = false,
   });
 }

@@ -50,7 +50,8 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
   Terminal? _karmaTerm;
   Pty?      _karmaPty;
   Timer?    _clientPollTimer;
-  final List<String> _karmaClients = [];
+  final List<String> _karmaClients      = []; // all seen IPs (dedup)
+  final List<String> _karmaPendingQueue = []; // seen but not yet processed
   bool    _karmaRunning      = false;
   bool    _karmaWaiting      = false; // waiting for next client
   String? _karmaCurrentClient;
@@ -235,6 +236,10 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
       _clock.start();
       _ticker.start();
     }
+    if (widget.pipeline.karmaAttach) {
+      await _attachToRunningKarma();
+      return;
+    }
     if (_pipelineSessionDir == null) {
       final now = DateTime.now();
       final ts = '${now.year.toString().padLeft(4, '0')}-'
@@ -249,6 +254,45 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
       await _seedChainFiles(_pipelineSessionDir!);
     }
     await _startKarma();
+  }
+
+  // Attach to an already-running KARMA session (started from module tab).
+  Future<void> _attachToRunningKarma() async {
+    final sessionFile = '${NetHunterService.chrootPath}/tmp/karma_running_session';
+    final r = await Process.run('su', ['-c', 'cat "$sessionFile" 2>/dev/null || true']);
+    final sessionDir = r.stdout.toString().trim();
+
+    if (sessionDir.isEmpty) {
+      if (mounted) setState(() {
+        _karmaRunning = false;
+        _karmaWaiting = false;
+      });
+      // Show error in first step terminal
+      if (_runSteps.isNotEmpty) {
+        final term = Terminal(maxLines: 1000);
+        _runSteps[0].terminal = term;
+        term.write('\r\n\x1b[1;31m[!] No running KARMA session found.\x1b[0m\r\n');
+        term.write('\x1b[2m    Start KARMA from the modules tab first, then attach here.\x1b[0m\r\n');
+        setState(() { _runSteps[0].status = _StepStatus.running; _viewIdx = 0; });
+      }
+      return;
+    }
+
+    // Use the running session's directory directly
+    _pipelineSessionDir = sessionDir;
+    await _seedChainFiles(_pipelineSessionDir!);
+
+    setState(() {
+      _karmaRunning = true;
+      _karmaWaiting = true;
+      _viewIdx      = 0;
+    });
+
+    // No PTY — karma is already running externally.
+    // Poll karma_clients.txt from the running session.
+    _clientPollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _pollKarmaClients());
+    unawaited(ScanForegroundService.startScan('KARMA — attached to running session'));
+    if (mounted) setState(() {});
   }
 
   Future<void> _startKarma() async {
@@ -300,7 +344,9 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
   }
 
   Future<void> _pollKarmaClients() async {
-    if (!_karmaRunning || _aborted || _pipelineSessionDir == null) return;
+    if (_aborted || _pipelineSessionDir == null) return;
+    // In attach mode, keep running even without a PTY — external karma is running
+    if (!_karmaRunning && !widget.pipeline.karmaAttach) return;
     final file = '${NetHunterService.chrootPath}$_pipelineSessionDir/karma_clients.txt';
     final r = await Process.run('su', ['-c', 'cat "$file" 2>/dev/null || true']);
     final ips = r.stdout.toString().trim().split('\n')
@@ -312,9 +358,17 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
         _karmaClients.add(ip);
         if (_karmaWaiting && _runSteps.isNotEmpty) {
           _startPipelineForClient(ip);
-          break; // one at a time; next poll catches queued clients
+          return; // one at a time
+        } else {
+          // Pipeline busy — queue for later
+          if (!_karmaPendingQueue.contains(ip)) _karmaPendingQueue.add(ip);
         }
       }
+    }
+    // If waiting and nothing new arrived, drain the pending queue
+    if (_karmaWaiting && _runSteps.isNotEmpty && _karmaPendingQueue.isNotEmpty) {
+      final next = _karmaPendingQueue.removeAt(0);
+      _startPipelineForClient(next);
     }
   }
 
@@ -571,6 +625,7 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
                       waiting: _karmaWaiting,
                       clientCount: _karmaClientCount,
                       currentClient: _karmaCurrentClient,
+                      attached: widget.pipeline.karmaAttach,
                       isViewing: _viewIdx == -1,
                       onTap: _karmaTerm != null ? () => setState(() => _viewIdx = -1) : null,
                     ),
@@ -944,6 +999,7 @@ class _KarmaSidebarTile extends StatelessWidget {
   final bool waiting;
   final int clientCount;
   final String? currentClient;
+  final bool attached;
   final bool isViewing;
   final VoidCallback? onTap;
 
@@ -953,6 +1009,7 @@ class _KarmaSidebarTile extends StatelessWidget {
     required this.clientCount,
     required this.currentClient,
     required this.isViewing,
+    this.attached = false,
     this.onTap,
   });
 
@@ -987,12 +1044,26 @@ class _KarmaSidebarTile extends StatelessWidget {
                 fontFamily: 'monospace', fontSize: 9,
                 color: color, fontWeight: FontWeight.bold, letterSpacing: 1,
               )),
+            if (attached) ...[
+              const SizedBox(width: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+                decoration: BoxDecoration(
+                  color: FColors.amber.op(0.15),
+                  border: Border.all(color: FColors.amber.op(0.5), width: 0.5),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                child: const Text('LINKED',
+                  style: TextStyle(fontFamily: 'monospace', fontSize: 6,
+                    color: FColors.amber, letterSpacing: 0.5)),
+              ),
+            ],
           ]),
           const SizedBox(height: 3),
           Text(
             running
-                ? (waiting ? 'waiting…' : currentClient ?? 'active')
-                : 'stopped',
+                ? (waiting ? (attached ? 'watching…' : 'waiting…') : currentClient ?? 'active')
+                : (attached ? 'no session found' : 'stopped'),
             style: const TextStyle(
               fontFamily: 'monospace', fontSize: 8, color: FColors.textDim),
             overflow: TextOverflow.ellipsis,

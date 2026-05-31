@@ -364,7 +364,7 @@ code{color:var(--cy);font-size:0.88em;word-break:break-all}
     for (final sessionFiles in rawFiles.values) {
       for (final entry in sessionFiles.entries) {
         final k = entry.key.toLowerCase();
-        if (!k.contains('nikto') && !k.contains('web') &&
+        if (!k.contains('feroxbuster') && !k.contains('web') &&
             !k.contains('whatweb') && !k.contains('dirbust')) { continue; }
         // Derive URL from filename when possible
         final urlM = RegExp(r'dirbust_(.+)\.txt', caseSensitive: false)

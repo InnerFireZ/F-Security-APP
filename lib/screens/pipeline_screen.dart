@@ -24,6 +24,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
   final List<PipelineStep> _steps = [];
   bool   _karmaEnabled = false;
   String _karmaMode    = 'wpa'; // 'wpa' | 'opn' | 'eap'
+  bool   _karmaAttach  = false; // attach to already-running KARMA
 
   List<Project> _projects = [];
   Project? _selectedProject;
@@ -90,6 +91,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
       karmaMode:    _karmaMode,
       karmaSsid:    _karmaSsidCtrl.text.trim(),
       karmaPass:    _karmaPassCtrl.text.trim(),
+      karmaAttach:  _karmaAttach,
     );
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => PipelineRunScreen(pipeline: pipeline),
@@ -535,6 +537,50 @@ class _PipelineScreenState extends State<PipelineScreen> {
                                 style: TextStyle(
                                   fontFamily: 'monospace', fontSize: 8, color: FColors.textDim)),
                       ],
+                      const SizedBox(height: 12),
+                      Container(height: 0.5, color: FColors.red.op(0.2)),
+                      const SizedBox(height: 10),
+                      // Attach to running KARMA toggle
+                      GestureDetector(
+                        onTap: () => setState(() => _karmaAttach = !_karmaAttach),
+                        child: Row(children: [
+                          Container(
+                            width: 32, height: 18,
+                            decoration: BoxDecoration(
+                              color: _karmaAttach ? FColors.red.op(0.7) : FColors.bgPanel,
+                              border: Border.all(
+                                color: _karmaAttach ? FColors.red : FColors.textDim.op(0.3),
+                                width: 0.7),
+                              borderRadius: BorderRadius.circular(9),
+                            ),
+                            child: AnimatedAlign(
+                              duration: const Duration(milliseconds: 150),
+                              alignment: _karmaAttach ? Alignment.centerRight : Alignment.centerLeft,
+                              child: Container(
+                                margin: const EdgeInsets.all(2),
+                                width: 12, height: 12,
+                                decoration: BoxDecoration(
+                                  color: _karmaAttach ? Colors.white : FColors.textDim,
+                                  shape: BoxShape.circle),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text('ATTACH TO RUNNING KARMA',
+                              style: TextStyle(
+                                fontFamily: 'monospace', fontSize: 8,
+                                color: _karmaAttach ? FColors.red : FColors.textDim,
+                                letterSpacing: 1, fontWeight: FontWeight.bold)),
+                            Text(
+                              _karmaAttach
+                                  ? 'will use active KARMA session — no new AP started'
+                                  : 'starts a new KARMA rogue AP session',
+                              style: const TextStyle(
+                                fontFamily: 'monospace', fontSize: 7, color: FColors.textDim)),
+                          ]),
+                        ]),
+                      ),
                     ]),
                   ),
                 ),

@@ -6,7 +6,7 @@ import 'nethunter_service.dart';
 
 class ScriptDeployer {
   static const _versionKey    = 'deployed_version';
-  static const _currentVersion = '175';
+  static const _currentVersion = '194';
   static const currentVersion  = _currentVersion;
 
   static const _assetFiles = [

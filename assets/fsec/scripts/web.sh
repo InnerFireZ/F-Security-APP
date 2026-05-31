@@ -16,9 +16,17 @@ if [[ -z "$_WORDLIST" || ! -f "$_WORDLIST" ]]; then
   done
 fi
 
-banner "WEB RECON" "whatweb · nikto · gobuster / feroxbuster / dirb"
+banner "WEB RECON" "whatweb · feroxbuster / gobuster / dirb"
 
 target=$(prompt_target)
+
+# Pipeline mode: wait up to 30s for karma on_client nmap.txt before falling back to own scan
+if [[ -n "${SESSION_DIR:-}" ]] && [[ ! -f "${SESSION_DIR}/nmap.txt" ]]; then
+  for _w in $(seq 1 30); do
+    sleep 1
+    [[ -f "${SESSION_DIR}/nmap.txt" ]] && break
+  done
+fi
 
 # ── Existing nmap.txt? ────────────────────────────────────────────────────────
 _nmap_load="$(pick_nmap_file)"
@@ -126,8 +134,8 @@ fi
 _DIR_TOOL=""
 _select_dir_tool() {
   local -a _avail=()
-  command -v gobuster    &>/dev/null && _avail+=("gobuster")
   command -v feroxbuster &>/dev/null && _avail+=("feroxbuster")
+  command -v gobuster    &>/dev/null && _avail+=("gobuster")
   command -v dirb        &>/dev/null && _avail+=("dirb")
 
   if [[ ${#_avail[@]} -eq 0 ]]; then
@@ -249,6 +257,7 @@ run_feroxbuster() {
     (( _i++ ))
     printf '  %s%s%s → %s\n' "${CYAN}" "$(_bar $_i ${#URLS[@]})" "${RESET}" "$url"
     run_fg feroxbuster -u "$url" "${_wl_arg[@]}" \
+      -q --no-state \
       -o "$outdir/dirbust_$(_safe "$url").txt"
   done
 }
@@ -295,7 +304,7 @@ web_menu() {
   printf '  %s└──────────────────────────────────────────────────┘%s\n' "${CYAN}" "${RESET}"
   printf '\n'
   printf '  %s[01]%s ▶  whatweb      Identify web technologies\n'                    "${CYAN}"  "${RESET}"
-  printf '  %s[02]%s ▶  nikto        Web server vulnerability scanner\n'             "${CYAN}"  "${RESET}"
+  printf '  %s[02]%s ▶  feroxbuster  Dir/file brute-force\n'                          "${CYAN}"  "${RESET}"
   printf '  %s[03]%s ▶  dir brute    %s%s%s (change with [t])\n' \
     "${CYAN}" "${RESET}" "${GREEN}" "${_DIR_TOOL:-none}" "${RESET}"
   printf '  %s[04]%s ▶  Run all (1–3 in sequence)\n'                                "${GREEN}" "${RESET}"
@@ -305,12 +314,35 @@ web_menu() {
   printf '\n'
 }
 
+_publish_401_urls() {
+  [[ -z "${SESSION_DIR:-}" ]] && return
+  local _401_file="${SESSION_DIR}/chain_web_401.txt"
+  local _count=0
+  for _f in "$outdir"/dirbust_*.txt; do
+    [[ -f "$_f" ]] || continue
+    while IFS= read -r _line; do
+      # feroxbuster output: "401      GET   ...  http://host/path"
+      if [[ "$_line" =~ ^401[[:space:]] ]]; then
+        local _url
+        _url=$(printf '%s' "$_line" | grep -oP 'https?://\S+' || true)
+        [[ -z "$_url" ]] && continue
+        grep -qxF "$_url" "$_401_file" 2>/dev/null || {
+          printf '%s\n' "$_url" >> "$_401_file"
+          (( _count++ )) || true
+        }
+      fi
+    done < "$_f"
+  done
+  (( _count > 0 )) && printf '  %s[CHAIN]%s chain_web_401.txt: %d HTTP Basic Auth path(s) for brute%s\n\n' \
+    "${CYAN}" "${RESET}" "$_count" "${RESET}"
+}
+
 if [[ -n "${SESSION_DIR:-}" ]]; then
   printf '  %s[CHAIN]%s Pipeline mode — running all web scans automatically%s\n\n' \
     "${CYAN}" "${RESET}" "${RESET}"
   run_whatweb
-  run_nikto
   run_dirbust
+  _publish_401_urls
 else
   while true; do
     web_menu
@@ -318,9 +350,9 @@ else
     read -r choice
     case "$choice" in
       1)  run_whatweb  ;;
-      2)  run_nikto    ;;
-      3)  run_dirbust  ;;
-      4)  run_whatweb; run_nikto; run_dirbust ;;
+      2)  run_feroxbuster ;;
+      3)  run_dirbust     ;;
+      4)  run_whatweb; run_feroxbuster; run_dirbust ;;
       t|T) _select_dir_tool ;;
       0)  break ;;
       *)  printf '  %s[!] Invalid option%s\n' "${RED}" "${RESET}" ;;
