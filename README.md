@@ -499,13 +499,14 @@ adb install -r app-release.apk
 
 ## Legal
 
-For authorized penetration testing and security research only. Use against systems without explicit written permission is illegal. The authors accept no liability for misuse.
+**F-Security is provided strictly for authorized penetration testing, security research, and educational purposes.**
 
----
+By downloading, installing, or using this software you agree to the following:
 
-## Credits
+- You will only use F-Security against systems, networks, and devices **you own** or for which you have **explicit written authorization** from the owner.
+- Unauthorized use against systems you do not own or have permission to test is **illegal** under applicable computer crime laws (CFAA, Computer Misuse Act, EU Directive 2013/40/EU, and equivalents).
+- The KARMA rogue-AP suite, deauth modules, NTLM relay, and credential-brute modules are **offensive tools** — deploying them on networks without consent is a criminal offence in most jurisdictions.
+- **The author assumes zero liability** for damage, data loss, legal consequences, or any harm resulting from misuse or misapplication of this software.
+- This software is distributed **as-is**, with no warranty of any kind, express or implied.
 
-**F-Security bash suite** — scripts, IoT/SCADA engine, CVE modules, C2 framework, pipeline chain system, KARMA rogue-AP suite  
-**Android application** — Flutter UI, PTY integration, WiFi/MITM/relay modules, pipeline engine, KARMA pipeline integration, project reports
-
-By [InnerFireZ](https://github.com/InnerFireZ)
+If you are unsure whether your intended use is lawful, **do not use this software**. Always obtain written scope-of-engagement authorization before any test.
