@@ -26,10 +26,11 @@ class PipelineTemplate {
   List<PipelineStep> buildSteps() {
     final steps = <PipelineStep>[];
     for (final mid in moduleIds) {
-      try {
-        final m = kModules.firstWhere((m) => m.id == mid);
-        steps.add(PipelineStep(module: m));
-      } catch (_) {}
+      final m = kModules.where((m) => m.id == mid).firstOrNull;
+      // A template referencing an unknown module id is a developer error — fail
+      // loudly in debug instead of silently dropping a pipeline phase.
+      assert(m != null, 'Pipeline template references unknown module id $mid');
+      if (m != null) steps.add(PipelineStep(module: m));
     }
     return steps;
   }

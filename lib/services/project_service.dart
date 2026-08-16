@@ -172,16 +172,18 @@ class ProjectService {
         if (hostRows.isEmpty) continue;
         final hostId = hostRows.first['id'] as int;
 
-        // Merge ports
+        // Merge ports. Upsert with COALESCE so a later scan only *fills in* a
+        // missing service — a null from a re-merge (e.g. fscan after nmap) must
+        // not wipe a service already discovered. (ConflictAlgorithm.replace did
+        // exactly that by deleting the old row.)
         for (final port in host.ports) {
-          // Use replace so that service names discovered later (e.g. nmap after
-          // fscan) overwrite the earlier null/empty value.
-          await txn.insert('ports', {
-            'host_id': hostId,
-            'number': port.number,
-            'protocol': port.protocol,
-            'service': port.service,
-          }, conflictAlgorithm: ConflictAlgorithm.replace);
+          await txn.rawInsert(
+            'INSERT INTO ports (host_id, number, protocol, service) '
+            'VALUES (?, ?, ?, ?) '
+            'ON CONFLICT(host_id, number, protocol) DO UPDATE SET '
+            'service = COALESCE(excluded.service, ports.service)',
+            [hostId, port.number, port.protocol, port.service],
+          );
         }
       }
     });
@@ -256,8 +258,10 @@ class ProjectService {
         final user = parts[0];
         if (!_crackedUserRe.hasMatch(user)) continue; // multi-word = tool noise
         if (user.length > 64) continue; // hash lines are long — skip
-        // hashcat: hash:password (2 parts) / john --show: user:pass:uid:gid:... (>=3 parts)
-        final pass = parts[1].trim();
+        // hashcat: hash:password (2 parts) → password may itself contain ':',
+        // so take everything after the first colon. john --show:
+        // user:pass:uid:gid:... (>=3 parts) → password is the second field.
+        final pass = (parts.length == 2 ? parts.sublist(1).join(':') : parts[1]).trim();
         if (pass.isEmpty || pass == '*' || pass == '!') continue;
         await txn.insert('credentials', {
           'project_id': projectId,

@@ -43,12 +43,15 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     await SettingsService.load();
     await ProjectService.init();
     await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
 
     setState(() => _status = 'CHECKING ROOT ACCESS...');
     _hasRoot = await NetHunterService.hasRoot();
+    if (!mounted) return;
 
     setState(() => _status = 'CHECKING NETHUNTER CHROOT...');
     final detectedPath = await NetHunterService.detectChrootPath();
+    if (!mounted) return;
     if (detectedPath != null) {
       _hasChroot = true;
       if (detectedPath != NetHunterService.chrootPath) {
@@ -65,11 +68,13 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
     // Deploy scripts if needed
     final needsDeploy = await ScriptDeployer.needsDeploy();
+    if (!mounted) return;
     if (needsDeploy) {
       setState(() { _deploying = true; _status = 'DEPLOYING SCRIPTS...'; });
       await ScriptDeployer.deploy(
-        onProgress: (msg, p) => setState(() { _deployMsg = msg; _deployProg = p; }),
+        onProgress: (msg, p) { if (mounted) setState(() { _deployMsg = msg; _deployProg = p; }); },
       );
+      if (!mounted) return;
       setState(() { _deploying = false; });
     }
 

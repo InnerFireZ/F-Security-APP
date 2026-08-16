@@ -49,7 +49,7 @@ class _FSecurityState extends State<FSecurity> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'F-Security',
-      theme: AppTheme.build(FColors.oled),
+      theme: AppTheme.build(),
       home: const SplashScreen(),
       debugShowCheckedModeBanner: false,
     );

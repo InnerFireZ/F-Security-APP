@@ -33,6 +33,7 @@ class _ReportPickerScreenState extends State<ReportPickerScreen> {
       ReportService.listSessions(),
       ProjectService.getActiveProject(),
     ]);
+    if (!mounted) return;
     setState(() {
       _sessions = results[0] as List<SessionInfo>;
       _activeProject = results[1] as Project?;
@@ -47,8 +48,8 @@ class _ReportPickerScreenState extends State<ReportPickerScreen> {
     if (project == null) return;
     setState(() => _generatingProject = true);
     final path = await ReportService.generateProjectReport(project);
-    setState(() => _generatingProject = false);
     if (!mounted) return;
+    setState(() => _generatingProject = false);
     if (path == null) {
       _showError('Project report generation failed.');
       return;
@@ -68,9 +69,10 @@ class _ReportPickerScreenState extends State<ReportPickerScreen> {
     if (!s.hasReport) {
       setState(() => _generating = s.fullPath);
       final ok = await ReportService.generate(s);
+      if (!mounted) return;
       setState(() => _generating = null);
       if (!ok) {
-        if (mounted) _showError('Report generation failed — check python3 is installed in the chroot.');
+        _showError('Report generation failed — check python3 is installed in the chroot.');
         return;
       }
       await _load();

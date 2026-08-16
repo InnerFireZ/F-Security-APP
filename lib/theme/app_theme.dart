@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'colors.dart';
 
 class AppTheme {
-  static ThemeData build(bool oled) => ThemeData(
+  // Colors come from FColors getters keyed off the FColors.oled global (set at
+  // startup / on toggle), so build takes no parameter.
+  static ThemeData build() => ThemeData(
     brightness: Brightness.dark,
     scaffoldBackgroundColor: FColors.bg,
     colorScheme: ColorScheme.dark(
@@ -19,5 +21,5 @@ class AppTheme {
     useMaterial3: true,
   );
 
-  static ThemeData get dark => build(FColors.oled);
+  static ThemeData get dark => build();
 }

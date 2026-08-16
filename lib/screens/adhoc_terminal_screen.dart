@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_pty/flutter_pty.dart';
@@ -26,6 +27,7 @@ class _AdHocTerminalScreenState extends State<AdHocTerminalScreen> {
   late final Terminal _terminal;
   late final TerminalController _controller;
   Pty? _pty;
+  StreamSubscription? _ptySub;
   bool _running = false;
   double _fontSize = 9.0;
 
@@ -40,13 +42,15 @@ class _AdHocTerminalScreenState extends State<AdHocTerminalScreen> {
 
   @override
   void dispose() {
+    _ptySub?.cancel();
     _pty?.kill();
     _controller.dispose();
     super.dispose();
   }
 
   void _launch() {
-    setState(() => _running = true);
+    // Called only from initState — set the field directly, no setState.
+    _running = true;
     const linuxPath = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
     final cmd =
         'chroot ${NetHunterService.chrootPath} /usr/bin/env -i'
@@ -62,7 +66,7 @@ class _AdHocTerminalScreenState extends State<AdHocTerminalScreen> {
         environment: {'TERM': 'xterm-256color'},
       );
 
-      _pty!.output
+      _ptySub = _pty!.output
           .cast<List<int>>()
           .transform(const Utf8Decoder(allowMalformed: true))
           .listen(

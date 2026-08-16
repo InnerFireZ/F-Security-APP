@@ -45,6 +45,13 @@ class _TerminalScreenState extends State<TerminalScreen> {
       // Re-wire keyboard → PTY (terminal.onOutput is replaced per-attach).
       _session.terminal.onOutput = (data) =>
           _session.pty.write(const Utf8Encoder().convert(data));
+      // Re-point completion callback at THIS (live) State — the original screen's
+      // closure is dead, so without this a reconnected session shows "running"
+      // forever after the process exits.
+      _session.onDone = () {
+        if (mounted) setState(() => _running = false);
+        _syncToProject();
+      };
     } else {
       // Launch a new session.
       _session = SessionManager.instance.start(

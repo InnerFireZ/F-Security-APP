@@ -80,6 +80,10 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
 
   @override
   void dispose() {
+    // Mark aborted so any step onDone firing after disposal (killing a PTY
+    // closes its stream → onDone) does not advance the pipeline or spawn the
+    // next su step / setState after dispose.
+    _aborted = true;
     _ticker.dispose();
     _clock.stop();
     _clientPollTimer?.cancel();
@@ -143,12 +147,31 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
     final pidFile = '/data/local/tmp/fsec_pl_${DateTime.now().millisecondsSinceEpoch}.pid';
     final fullCmd = 'echo \$\$ > $pidFile; $cmd';
 
-    final pty = Pty.start(
-      'su',
-      arguments: ['-c', fullCmd],
-      columns: 110, rows: 40,
-      environment: {'TERM': 'xterm-256color'},
-    );
+    final Pty pty;
+    try {
+      pty = Pty.start(
+        'su',
+        arguments: ['-c', fullCmd],
+        columns: 110, rows: 40,
+        environment: {'TERM': 'xterm-256color'},
+      );
+    } catch (e) {
+      // Spawn failed (su missing / exec error): mark step failed and advance so
+      // the pipeline doesn't hang forever on a step with no onDone handler.
+      rs.status = _StepStatus.failed;
+      term.write('\r\n\x1b[1;31m[!] Failed to start: $e\x1b[0m\r\n');
+      _currentIdx++;
+      if (mounted) setState(() {});
+      if (_currentIdx < _runSteps.length) {
+        _viewIdx = _currentIdx;
+        _startNext();
+      } else {
+        _clock.stop();
+        _ticker.stop();
+        unawaited(ScanForegroundService.completeScan(widget.pipeline.name));
+      }
+      return;
+    }
     rs.pty = pty;
 
     pty.output
@@ -191,7 +214,7 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
 
     term.onOutput = (data) => pty.write(const Utf8Encoder().convert(data));
 
-    setState(() => _viewIdx = _currentIdx);
+    if (mounted) setState(() => _viewIdx = _currentIdx);
   }
 
   // Pre-seed chain files with known pipeline config so modules don't have to wait.
@@ -273,7 +296,7 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
         _runSteps[0].terminal = term;
         term.write('\r\n\x1b[1;31m[!] No running KARMA session found.\x1b[0m\r\n');
         term.write('\x1b[2m    Start KARMA from the modules tab first, then attach here.\x1b[0m\r\n');
-        setState(() { _runSteps[0].status = _StepStatus.running; _viewIdx = 0; });
+        if (mounted) setState(() { _runSteps[0].status = _StepStatus.running; _viewIdx = 0; });
       }
       return;
     }
@@ -281,6 +304,7 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
     // Use the running session's directory directly
     _pipelineSessionDir = sessionDir;
     await _seedChainFiles(_pipelineSessionDir!);
+    if (!mounted) return;
 
     setState(() {
       _karmaRunning = true;
@@ -296,6 +320,7 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
   }
 
   Future<void> _startKarma() async {
+    if (!mounted) return;
     final term = Terminal(maxLines: 10000);
     setState(() {
       _karmaRunning = true;
@@ -316,12 +341,19 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
       },
     );
 
-    final pty = Pty.start(
-      'su',
-      arguments: ['-c', cmd],
-      columns: 110, rows: 40,
-      environment: {'TERM': 'xterm-256color'},
-    );
+    final Pty pty;
+    try {
+      pty = Pty.start(
+        'su',
+        arguments: ['-c', cmd],
+        columns: 110, rows: 40,
+        environment: {'TERM': 'xterm-256color'},
+      );
+    } catch (e) {
+      term.write('\r\n\x1b[1;31m[!] Failed to start KARMA: $e\x1b[0m\r\n');
+      if (mounted) setState(() { _karmaRunning = false; });
+      return;
+    }
     _karmaPty = pty;
 
     pty.output
@@ -373,7 +405,7 @@ class _PipelineRunScreenState extends State<PipelineRunScreen>
   }
 
   void _startPipelineForClient(String ip) {
-    if (_aborted) return;
+    if (_aborted || !mounted) return;
     setState(() {
       _karmaWaiting       = false;
       _karmaCurrentClient = ip;

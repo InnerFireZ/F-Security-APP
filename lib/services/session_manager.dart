@@ -15,6 +15,12 @@ class ActiveSession {
   final StringBuffer rawOutput;
   final String pidFile;
   bool isRunning;
+  // True once a user-initiated kill() has run, so the PTY's onDone (fired by
+  // killing the PTY) knows not to show a "Scan complete" notification.
+  bool killed = false;
+  // Mutable so a screen reconnecting to a backgrounded session can re-point the
+  // completion callback at its own live State (the original closure is dead).
+  void Function()? onDone;
   final Set<String> _alertedMacs = {};
 
   ActiveSession({
@@ -23,6 +29,7 @@ class ActiveSession {
     required this.terminal,
     required this.rawOutput,
     required this.pidFile,
+    this.onDone,
     this.isRunning = true,
   });
 
@@ -75,6 +82,7 @@ class SessionManager {
       terminal: terminal,
       rawOutput: rawOutput,
       pidFile: pidFile,
+      onDone: onDone,
     );
 
     pty.output
@@ -125,7 +133,10 @@ class SessionManager {
           onDone: () {
             session.isRunning = false;
             _remove(module.id);
-            onDone?.call();
+            session.onDone?.call();
+            // User-initiated kill() already handled the notification state and
+            // must not trigger a "Scan complete" pop-up.
+            if (session.killed) return;
             if (_sessions.isEmpty) {
               unawaited(ScanForegroundService.completeScan(module.name));
             } else {
@@ -147,6 +158,7 @@ class SessionManager {
   void kill(int moduleId) {
     final s = _sessions.remove(moduleId);
     if (s == null) return;
+    s.killed = true;
     s.pty.kill();
     s.isRunning = false;
     _notify();

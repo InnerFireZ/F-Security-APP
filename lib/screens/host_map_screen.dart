@@ -33,8 +33,10 @@ class _HostMapScreenState extends State<HostMapScreen> {
     setState(() { _loading = true; _error = null; });
     try {
       final map = await HostMapService.parse(widget.sessionPath, widget.sessionName);
+      if (!mounted) return;
       setState(() { _map = map; _loading = false; });
     } catch (e) {
+      if (!mounted) return;
       setState(() { _error = e.toString(); _loading = false; });
     }
   }

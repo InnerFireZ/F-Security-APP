@@ -81,7 +81,14 @@ find "\$p" -maxdepth 2 -mindepth 1 -type d 2>/dev/null \\
 
     final process = await Process.start('su', ['-c', cmd]);
     await process.stdin.close();
+    // Drain stdout/stderr — a verbose report.sh that fills the ~64KB OS pipe
+    // buffer would otherwise block on write and exitCode would never complete.
+    final drained = Future.wait([
+      process.stdout.drain<void>(),
+      process.stderr.drain<void>(),
+    ]);
     final code = await process.exitCode;
+    await drained;
     return code == 0;
   }
 
@@ -179,7 +186,10 @@ code{color:var(--cy);font-size:0.88em;word-break:break-all}
     ]);
     final output = r.stdout.toString();
     final result = <String, String>{};
-    final re = RegExp(r'<<FSECBND:([^>]+)>>\n([\s\S]*?)(?=<<FSECBND:|\Z)');
+    // NOTE: use $ for end-of-input, NOT \Z — Dart's RegExp is ECMAScript, where
+    // \Z is an identity escape matching a literal 'Z', which truncated content
+    // at the first uppercase Z in any file.
+    final re = RegExp(r'<<FSECBND:([^>]+)>>\n([\s\S]*?)(?=<<FSECBND:|$)');
     for (final m in re.allMatches(output)) {
       final name = m.group(1)!.trim();
       if (name.isNotEmpty) result[name] = m.group(2)!;
@@ -489,7 +499,14 @@ code{color:var(--cy);font-size:0.88em;word-break:break-all}
 
     // Parse key findings from raw files
     final vulns      = _parseNucleiFindings(rawFiles);
-    final bruteCreds = _parseBruteCreds(rawFiles);
+    // Drop brute-parsed creds already imported into SQLite (same brute.txt) so
+    // stats/tables don't count the same credential twice.
+    final credKeys = creds
+        .map((c) => '${c.hostIp}|${c.username}|${c.password}')
+        .toSet();
+    final bruteCreds = _parseBruteCreds(rawFiles)
+        .where((c) => !credKeys.contains('${c['host']}|${c['login']}|${c['password']}'))
+        .toList();
     final iotFinds   = _parseIotFindings(rawFiles);
     final sslFinds   = _parseSslFindings(rawFiles);
     final webFinds   = _parseWebFindings(rawFiles);
@@ -1130,7 +1147,9 @@ document.querySelectorAll('.sec > h2').forEach(h=>{
       .replaceAll('>', '&gt;')
       .replaceAll('"', '&quot;');
 
-  static final _ansiRe = RegExp(r'\x1B\[[0-9;]*[A-Za-z]|\[[0-9;]*m');
+  // Require the ESC byte — a bare "[..m" alternative stripped legitimate text
+  // like "[2m" / "[10m" out of tool output. [A-Za-z] already covers the 'm'.
+  static final _ansiRe = RegExp(r'\x1B\[[0-9;]*[A-Za-z]');
   static String _stripAnsi(String s) => s.replaceAll(_ansiRe, '');
 
   static bool _hasCritical(String raw) =>

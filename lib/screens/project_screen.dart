@@ -21,6 +21,7 @@ class _ProjectScreenState extends State<ProjectScreen> {
   }
 
   Future<void> _load() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     final projects = await ProjectService.listProjects();
     if (mounted) setState(() { _projects = projects; _loading = false; });

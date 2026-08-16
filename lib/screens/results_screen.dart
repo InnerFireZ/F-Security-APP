@@ -71,8 +71,10 @@ class _ResultsScreenState extends State<ResultsScreen> {
           absPath: absPath,
         );
       }).toList();
+      if (!mounted) return;
       setState(() => _sessions = sessions);
     } catch (_) {
+      if (!mounted) return;
       setState(() => _sessions = []);
     }
     await _loadMaps();
@@ -495,6 +497,7 @@ class _SessionScreenState extends State<_SessionScreen> {
           final name = l.split('/').last;
           return !name.endsWith('.jsonl') && !name.startsWith('.');
         }).toList();
+    if (!mounted) return;
     setState(() { _files = lines; _loading = false; });
   }
 

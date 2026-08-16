@@ -29,12 +29,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _chrootCtrl    = TextEditingController(text: NetHunterService.chrootPath);
     _wordlistCtrl  = TextEditingController(text: SettingsService.defaultWordlist);
-    SettingsService.getFontSize().then((v) => setState(() => _fontSize = v));
-    SettingsService.getWordlist().then((v) => setState(() => _wordlistCtrl.text = v));
-    SettingsService.getNucleiConc().then((v) => setState(() => _nucleiConc = v.toDouble()));
-    SettingsService.getTerminalTheme().then((v) => setState(() => _termTheme = v));
-    SettingsService.getEdgeGlow().then((v) => setState(() => _edgeGlow = v));
-    SettingsService.getOledMode().then((v) => setState(() => _oledMode = v));
+    SettingsService.getFontSize().then((v) { if (mounted) setState(() => _fontSize = v); });
+    SettingsService.getWordlist().then((v) { if (mounted) setState(() => _wordlistCtrl.text = v); });
+    SettingsService.getNucleiConc().then((v) { if (mounted) setState(() => _nucleiConc = v.toDouble()); });
+    SettingsService.getTerminalTheme().then((v) { if (mounted) setState(() => _termTheme = v); });
+    SettingsService.getEdgeGlow().then((v) { if (mounted) setState(() => _edgeGlow = v); });
+    SettingsService.getOledMode().then((v) { if (mounted) setState(() => _oledMode = v); });
   }
 
   @override
@@ -47,17 +47,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _redeploy() async {
     setState(() { _deploying = true; _deployMsg = ''; _deployProgress = 0; });
     await ScriptDeployer.deploy(
-      onProgress: (msg, p) => setState(() { _deployMsg = msg; _deployProgress = p; }),
+      onProgress: (msg, p) { if (mounted) setState(() { _deployMsg = msg; _deployProgress = p; }); },
     );
+    if (!mounted) return;
     setState(() => _deploying = false);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Scripts deployed successfully', style: TextStyle(fontFamily: 'monospace')),
-          backgroundColor: Color(0xFF0D1117),
-        ),
-      );
-    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Scripts deployed successfully', style: TextStyle(fontFamily: 'monospace')),
+        backgroundColor: Color(0xFF0D1117),
+      ),
+    );
   }
 
   @override

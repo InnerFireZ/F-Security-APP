@@ -68,8 +68,11 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   void _onRunningChanged() {
     final current = SessionManager.instance.runningIds.value;
-    if (_prevIds.isNotEmpty && current.length < _prevIds.length && _edgeGlowColor != 'off') {
-      final finishedId = _prevIds.difference(current).firstOrNull;
+    // Detect finishes by set difference, not length — a module finishing while
+    // another starts leaves the length unchanged but still ended a scan.
+    final finished = _prevIds.difference(current);
+    if (finished.isNotEmpty && _edgeGlowColor != 'off') {
+      final finishedId = finished.firstOrNull;
       Color col;
       if (_edgeGlowColor == 'auto' && finishedId != null) {
         final mod = kModules.where((m) => m.id == finishedId).firstOrNull;

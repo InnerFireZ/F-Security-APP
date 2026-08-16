@@ -79,12 +79,9 @@ class ProjectHost {
     required this.ip,
     this.ports = const [],
   });
-
-  factory ProjectHost.fromMap(Map<String, dynamic> m) => ProjectHost(
-    id: m['id'] as int?,
-    projectId: m['project_id'] as int,
-    ip: m['ip'] as String,
-  );
+  // No fromMap: hosts are loaded via ProjectService.getHosts, which populates
+  // ports from the separate ports table. A fromMap here would silently yield
+  // ports == [] and mislead every host.ports.length reader.
 }
 
 class ProjectPort {
